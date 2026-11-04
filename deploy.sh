@@ -115,9 +115,9 @@ PYEOF
 
 # 7) crontab 指引（不自动安装）
 echo
-echo "[部署] crontab 内容见 $APP_DIR/daletou.cron，安装方式："
+echo "[部署] crontab 请用追加方式安装（保留已有任务，勿整体覆盖）："
 echo "    crontab -l > ~/crontab.bak 2>/dev/null || true"
-echo "    crontab $APP_DIR/daletou.cron"
+echo "    ( crontab -l 2>/dev/null | sed 's/\r\$//' | grep -v 'daletou/run.sh' | grep -v '^CRON_TZ='; cat $APP_DIR/daletou.cron ) | crontab -"
 echo
 echo "[部署] 手动验证命令："
 echo "    cd $APP_DIR && $PY lotto.py selftest"

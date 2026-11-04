@@ -1,6 +1,8 @@
-# daletou cron jobs (ASCII only, LF line endings required)
-# Overwrite install:  crontab /opt/daletou/daletou.cron
-# Append install:     ( crontab -l; cat /opt/daletou/daletou.cron ) | crontab -
+# daletou cron jobs (ASCII only, LF line endings required).
+# IMPORTANT: install by APPENDING. Never run "crontab daletou.cron",
+# it would erase existing jobs (e.g. Tencent Cloud stargate monitor).
+#   ( crontab -l 2>/dev/null | sed 's/\r$//' | grep -v 'daletou/run.sh' | grep -v '^CRON_TZ='; \
+#     cat /opt/daletou/daletou.cron ) | crontab -
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Asia/Shanghai

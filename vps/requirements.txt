@@ -1,4 +1,0 @@
-# 大乐透脚本依赖
-# 仅 openpyxl 为可选：用于生成 results.xlsx；缺失时脚本自动跳过 xlsx，
-# results.md / results.html 仍正常产出。
-openpyxl>=3.0,<4

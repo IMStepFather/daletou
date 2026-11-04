@@ -1,0 +1,14 @@
+# Ubuntu VPS executes/parses these files directly.
+# CRLF breaks the shebang ("bash\r: not found") and crontab ("bad minute"),
+# so force LF in the working tree regardless of the global core.autocrlf=true.
+* text=auto
+*.sh           text eol=lf
+*.cron         text eol=lf
+*.py           text eol=lf
+*.md           text eol=lf
+*.txt          text eol=lf
+.env.example   text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+LICENSE        text eol=lf
+*.xlsx binary

@@ -120,9 +120,9 @@ echo "[部署] crontab 请用追加方式安装（保留已有任务，勿整体
 echo "    crontab -l > ~/crontab.bak 2>/dev/null || true"
 echo "    ( crontab -l 2>/dev/null | sed 's/\r\$//' | grep -v 'daletou/run.sh' | grep -v '^CRON_TZ='; cat $APP_DIR/daletou.cron ) | crontab -"
 echo
-echo "[部署] 手动验证命令："
-echo "    cd $APP_DIR && $PY lotto.py selftest"
-echo "    cd $APP_DIR && $PY lotto.py generate --force"
-echo "    cd $APP_DIR && $PY lotto.py notify"
+echo "[部署] 手动验证命令（务必用 run.sh，它会加载 .env）："
+echo "    cd $APP_DIR && ./run.sh selftest"
+echo "    cd $APP_DIR && ./run.sh fetch --dry-run"
+echo "    cd $APP_DIR && ./run.sh report"
 echo
 echo "[部署] 完成。请编辑 .env 填入 SENDKEY，再安装 crontab 即可上线。"

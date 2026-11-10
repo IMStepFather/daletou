@@ -36,7 +36,8 @@ mkdir -p "$APP_DIR/logs"
 
 # 2) 拷贝脚本（源文件位于当前目录）
 FILES=(config.py generator.py storage.py report.py fetcher.py notify.py lotto.py
-       fetch_results.py requirements.txt run.sh daletou.cron .env.example)
+       fetch_results.py prize_rules.py requirements.txt run.sh daletou.cron
+       .env.example)
 copied=0
 for f in "${FILES[@]}"; do
   if [[ -f "$f" ]]; then
@@ -102,7 +103,7 @@ $PY - "$APP_DIR" <<'PYEOF' || true
 import sys
 sys.path.insert(0, sys.argv[1])
 try:
-    import config, generator, storage, report, fetcher, notify, fetch_results
+    import config, generator, storage, report, fetcher, notify, fetch_results, prize_rules
 except ImportError as exc:
     print("[警告] 模块导入失败:", exc)
     sys.exit(0)

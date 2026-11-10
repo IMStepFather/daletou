@@ -51,8 +51,9 @@ from fetcher import (
     validate_batch,
 )
 from notify import build_compare_message, send_wechat
+from prize_rules import evaluate
 from report import render_all
-from storage import hits, load_records, set_actual
+from storage import load_records, set_actual
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -236,14 +237,39 @@ def _body(
 
     filled = []
     for r, d in matched:
+        predicted_issue = r.get("expected_issue", "")
+        if predicted_issue and predicted_issue != d["issue"]:
+            print(
+                f"[提示] {r['date']} 预测期号 第{predicted_issue}期 与实际 "
+                f"第{d['issue']}期 不一致（休市/改期），以实际期号为准。"
+            )
+        h = (
+            len(set(r["front"]) & set(d["front"])),
+            len(set(r["back"]) & set(d["back"])),
+        )
+        result = evaluate(
+            h[0], h[1], d.get("pool"),
+            d.get("first_prize"), d.get("second_prize"),
+        )
         rec = set_actual(
             r["date"], d["front"], d["back"],
             issue=d["issue"], source="500.com",
+            pool=d.get("pool"),
+            prize_level=result["level_name"],
+            prize=result["prize"],
+            cost=result["cost"],
         )
-        h = hits(rec)
+        prize_text = "待重算" if result["prize"] is None else f"¥{result['prize']}"
+        profit = result["profit"]
+        profit_text = (
+            "--" if profit is None
+            else (f"-¥{abs(profit)}" if profit < 0 else f"¥{profit}")
+        )
         print(
             f"[回填] {r['date']} 第{d['issue']}期 → "
-            f"命中 前区 {h[0]}/{FRONT_COUNT} · 后区 {h[1]}/{BACK_COUNT}"
+            f"命中 前区 {h[0]}/{FRONT_COUNT} · 后区 {h[1]}/{BACK_COUNT} | "
+            f"{result['level_name']} 奖金 {prize_text} "
+            f"成本 ¥{result['cost']} 收益 {profit_text}"
         )
         filled.append((rec, h))
 

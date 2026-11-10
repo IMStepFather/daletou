@@ -2,14 +2,15 @@
 
 子命令
 ------
-generate   生成一组号码（仅周一/三/六允许执行，--force 可强制）；
-           同日期幂等（重复执行不重复生成），写入 records.csv 并刷新报表
-record     手动补录某期开奖号码，回填对比数据并重算正确率
+generate   开奖日次日（周二/四/日）生成下一期预测号码；记录日期为
+           目标开奖日，并写入推算期号；同日期幂等
+record     手动补录某期开奖号码，按固定奖低档计算收益（浮动奖需 fetch 重算）
 fetch      抓取与预测日期对应的开奖结果（薄封装，转交独立脚本
            fetch_results.py 执行；两个入口共用同一实现）
 report     从 records.csv 重新渲染 results.md / results.xlsx / results.html
 notify     手动推送最新一期状态到微信（兼作 SENDKEY 连通性测试）
-selftest   随机生成模块自测（结构校验 + 均匀性卡方检验 + 星期校验）
+rules      校验官网开奖规则是否与本地固化规则一致
+selftest   自测（生成结构/均匀性/星期 + 中奖规则 13 条件）
 
 通知说明：generate / record / fetch 成功后自动推送微信（Server酱，
 SENDKEY 取环境变量 SERVERCHAN_SENDKEY 或 config.py）；推送失败仅告警，
@@ -18,7 +19,7 @@ SENDKEY 取环境变量 SERVERCHAN_SENDKEY 或 config.py）；推送失败仅告
 import argparse
 import sys
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List
 
 from config import (
@@ -26,12 +27,21 @@ from config import (
     BACK_MAX,
     BACK_MIN,
     CN_TZ,
+    COST_PER_TICKET,
     FRONT_COUNT,
     FRONT_MAX,
     FRONT_MIN,
+    PREDICT_WEEKDAYS,
 )
+from fetcher import fetch_latest, next_draw_date, next_issue
 from generator import generate_ticket, is_draw_day
 from notify import build_compare_message, build_generate_message, send_wechat
+from prize_rules import (
+    determine_level,
+    evaluate,
+    rule_snapshot,
+    verify_remote_rules,
+)
 from report import render_all
 from storage import (
     accuracy_summary,
@@ -39,6 +49,7 @@ from storage import (
     hits,
     load_records,
     parse_zone,
+    profit_summary,
     set_actual,
 )
 
@@ -54,7 +65,7 @@ def _today_cn() -> date:
     try:
         from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo(CN_TZ)).date()
-    except Exception:
+    except (ImportError, KeyError, ValueError):
         return date.today()
 
 
@@ -65,26 +76,55 @@ def _notify(title: str, body: str) -> None:
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
+    """在开奖日次日 09:00 生成「下一期」预测。
+
+    records.csv 的 date 记目标开奖日（周一/三/六），保证 fetch 的
+    「严格按日期匹配开奖结果」规则不变；expected_issue 由网页最新
+    期号推算，网络异常时留空并降级，不影响号码生成。
+    """
     today = _today_cn()
-    if not is_draw_day(today) and not args.force:
+    if today.weekday() not in PREDICT_WEEKDAYS and not args.force:
         print(
             f"[拒绝] 今天是星期{WEEKDAY_CN[today.weekday()]}，"
-            f"非开奖日（仅周一/三/六生成）。如确需生成请附加 --force。"
+            f"非预测生成日（开奖日次日：周二/四/日 09:00）。"
+            f"如确需生成请附加 --force。"
         )
         return 1
-    ticket = generate_ticket(today)
+
+    target = next_draw_date(today)
+    ticket = generate_ticket(target)
+    expected_issue = ""
+    try:
+        latest = fetch_latest()
+        yesterday = (today - timedelta(days=1)).isoformat()
+        if latest["date"] == yesterday:
+            expected_issue = next_issue(latest["issue"], target)
+        else:
+            print(
+                f"[警告] 网页最新一期为 第{latest['issue']}期（{latest['date']}），"
+                f"非 {yesterday}；可能因休市或数据延迟，本期不写预测期号。"
+            )
+    except (OSError, ValueError, UnicodeError, IndexError, KeyError) as exc:
+        print(
+            f"[警告] 抓取最新期号失败（{exc}）；仍生成号码，"
+            f"期号留空，开奖回填时以实际期号补齐。"
+        )
+
+    ticket["expected_issue"] = expected_issue
     if not append_ticket(ticket):
         print(f"[拒绝] {ticket['date']} 已生成过，同日期不重复生成（幂等）。")
         return 1
     render_all(load_records())
+    issue_text = f"第{expected_issue}期" if expected_issue else "期号待定"
     print(
-        f"[生成] {ticket['date']} "
+        f"[生成] 目标开奖日 {ticket['date']}（周{WEEKDAY_CN[target.weekday()]}）"
+        f" {issue_text} "
         f"前区: {format_zone(ticket['front'])}  "
         f"后区: {format_zone(ticket['back'])}"
     )
     print("[存储] 已写入 records.csv；报表已刷新：results.md / results.xlsx / results.html。")
     title, body = build_generate_message(
-        ticket, WEEKDAY_CN[today.weekday()]
+        ticket, WEEKDAY_CN[target.weekday()]
     )
     _notify(title, body)
     return 0
@@ -109,14 +149,26 @@ def cmd_record(args: argparse.Namespace) -> int:
         print(f"[失败] {exc}")
         return 1
 
+    existing = next(
+        (r for r in load_records() if r["date"] == args.draw_date), None
+    )
+    if existing is None:
+        print(
+            f"[失败] {args.draw_date} 无生成记录，请先用 generate 生成该期号码。"
+        )
+        return 1
+
+    # 手动补录无奖池与浮动奖数据：固定奖按低档保守计，浮动奖标记待重算。
+    front_hit = len(set(existing["front"]) & set(front))
+    back_hit = len(set(existing["back"]) & set(back))
+    result = evaluate(front_hit, back_hit, None, None, None)
     record = set_actual(
-        args.draw_date, front, back, issue="", source="manual"
+        args.draw_date, front, back, issue="", source="manual",
+        pool=None, prize_level=result["level_name"],
+        prize=result["prize"], cost=result["cost"],
     )
     if record is None:
-        print(
-            f"[失败] {args.draw_date} 无生成记录，请先用 generate 生成该期号码"
-            f"（非开奖日可用 --force）。"
-        )
+        print(f"[失败] {args.draw_date} 回填失败，请检查 records.csv。")
         return 1
 
     render_all(load_records())
@@ -129,7 +181,9 @@ def cmd_record(args: argparse.Namespace) -> int:
         f"[对比] 预测 前区: {format_zone(record['front'])}  "
         f"后区: {format_zone(record['back'])}"
     )
-    print(f"[命中] 前区 {h[0]}/5 · 后区 {h[1]}/2；报表已刷新。")
+    print(f"[命中] 前区 {h[0]}/5 · 后区 {h[1]}/2；奖级 {result['level_name']}。")
+    if result["prize"] is None:
+        print("[提示] 浮动奖数据缺失，中奖金额待重算：./run.sh fetch --force-correct --no-notify")
     title, body = build_compare_message(
         record, h[0], h[1], FRONT_COUNT, BACK_COUNT
     )
@@ -159,6 +213,32 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         force_correct=getattr(args, "force_correct", False),
         dry_run=getattr(args, "dry_run", False),
     )
+
+
+def cmd_rules(args: argparse.Namespace) -> int:
+    """展示固化规则，并从官网校验关键条款是否变更（只读，不自动改写）。"""
+    snap = rule_snapshot()
+    print(
+        f"[本地规则] 版本 {snap['version']}（自 {snap['effective_date']} 起）"
+        f" | {snap['levels']} 奖级 / {snap['conditions']} 中奖条件"
+        f" | 奖池档位 ¥{snap['pool_threshold']:,}"
+        f" | 成本 ¥{snap['cost']}/期"
+    )
+    print(f"[本地规则] 核实日期 {snap['verified_at']} | 来源 {snap['source']}")
+    try:
+        remote = verify_remote_rules()
+    except (OSError, ValueError, UnicodeError) as exc:
+        print(f"[失败] 无法读取官网规则页：{exc}")
+        print("[提示] 本地固化规则不受影响，可稍后重试。")
+        return 1
+    print(f"[官网校验] 抓取 {remote['bytes']} 字节，{snap['source']}")
+    for name, ok in remote["checks"].items():
+        print(f"  [{'一致' if ok else '不一致'}] {name}")
+    if not remote["ok"]:
+        print("[警告] 官网与本地规则存在差异，请人工核对后更新 prize_rules.py。")
+        return 1
+    print("[通过] 官网规则与本地固化规则一致，无需更新。")
+    return 0
 
 
 def _chi_square(counter: Counter, lo: int, hi: int, total_picks: int):
@@ -207,7 +287,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     # p=0.05 卡方临界值（查统计表）：df=34 -> 48.60，df=11 -> 19.68
     front_crit, back_crit = 48.60, 19.68
 
-    # 3) 星期校验（硬性）
+    # 3) 星期校验（开奖日 + 预测生成日）
     day_cases = [
         (date(2026, 10, 26), True),   # 周一
         (date(2026, 10, 27), False),  # 周二
@@ -221,10 +301,51 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         if actual != expect:
             print(f"[失败] 星期校验: {d} 期望 {expect} 实际 {actual}")
             return 1
+    predict_cases = [
+        (date(2026, 11, 8), True),    # 周日（周六开奖次日）
+        (date(2026, 11, 10), True),   # 周二（周一开奖次日）
+        (date(2026, 11, 12), True),   # 周四（周三开奖次日）
+        (date(2026, 11, 9), False),   # 周一（开奖当日）
+    ]
+    for d, expect in predict_cases:
+        if (d.weekday() in PREDICT_WEEKDAYS) != expect:
+            print(f"[失败] 预测日校验: {d} 期望 {expect}")
+            return 1
+
+    # 4) 中奖规则：13 个中奖条件 + 5 个未中奖组合 + 奖金口径
+    prize_cases = {
+        (5, 2): 1, (5, 1): 2, (5, 0): 3, (4, 2): 3, (4, 1): 4,
+        (4, 0): 5, (3, 2): 5, (3, 1): 6, (2, 2): 6,
+        (3, 0): 7, (2, 1): 7, (1, 2): 7, (0, 2): 7,
+    }
+    for combo, expect in prize_cases.items():
+        if determine_level(*combo) != expect:
+            print(f"[失败] 奖级判定: {combo} 期望 {expect}")
+            return 1
+    for combo in ((0, 0), (0, 1), (1, 0), (1, 1), (2, 0)):
+        if determine_level(*combo) is not None:
+            print(f"[失败] 未中奖组合误判: {combo}")
+            return 1
+    low = evaluate(3, 0, 758937073, 6603916, 210388)
+    high = evaluate(3, 0, 800000000, 6603916, 210388)
+    addon = evaluate(5, 2, 758937073, 1000000, 200000)
+    if low["prize"] != 5 or high["prize"] != 7:
+        print("[失败] 固定奖池两档计算错误")
+        return 1
+    if addon["prize"] != 1800000 or addon["cost"] != COST_PER_TICKET:
+        print("[失败] 追加投注浮动奖计算错误")
+        return 1
+    if evaluate(5, 2, 758937073, None, None)["prize"] is not None:
+        print("[失败] 浮动奖数据缺失时未正确降级")
+        return 1
 
     # ---- 汇总 ----
     print(f"[自测] 迭代 {iterations} 次，结构校验（数量/唯一性/范围）全部通过。")
-    print(f"[自测] 星期校验通过：仅周一/三/六返回 True。")
+    print("[自测] 星期校验通过：开奖日周一/三/六，预测日周二/四/日。")
+    print(
+        f"[自测] 规则校验通过：{len(prize_cases)} 个中奖条件、"
+        f"5 个未中奖组合、奖池两档、追加 80%。"
+    )
     print(
         f"[自测] 前区均匀性: chi2={front_stat:.2f} (df={front_df}, "
         f"临界值={front_crit}) "
@@ -266,10 +387,14 @@ def cmd_notify(args: argparse.Namespace) -> int:
     else:
         title, body = build_generate_message(latest, _weekday_cn(latest["date"]))
     s = accuracy_summary(records)
+    p = profit_summary(records)
     body += (
         f"\n\n---\n累计：共 {s['total']} 期，已对比 {s['compared']} 期；"
         f"前区 {s['front_hit']}/{s['front_picked']}，"
-        f"后区 {s['back_hit']}/{s['back_picked']}。"
+        f"后区 {s['back_hit']}/{s['back_picked']}。\n"
+        f"已结算 {p['periods']} 期：投入 ¥{p['total_cost']}，"
+        f"奖金 ¥{p['total_prize']}，"
+        f"净收益 {'-¥' + str(abs(p['net'])) if p['net'] < 0 else '¥' + str(p['net'])}。"
     )
     ok, msg = send_wechat(title, body)
     print(f"{'[通知]' if ok else '[通知失败]'} {msg}")
@@ -287,11 +412,13 @@ def main() -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_gen = sub.add_parser("generate", help="生成一组号码（仅周一/三/六）")
+    p_gen = sub.add_parser(
+        "generate", help="生成下一期号码（开奖日次日：周二/四/日）"
+    )
     p_gen.add_argument(
         "--force",
         action="store_true",
-        help="跳过星期校验强制生成（测试/补生成用）",
+        help="跳过预测日校验强制生成（测试/补生成用）",
     )
     p_gen.set_defaults(func=cmd_generate)
 
@@ -324,12 +451,17 @@ def main() -> int:
     )
     p_fetch.set_defaults(func=cmd_fetch)
 
+    p_rules = sub.add_parser(
+        "rules", help="校验官网开奖规则是否与本地固化规则一致"
+    )
+    p_rules.set_defaults(func=cmd_rules)
+
     p_notify = sub.add_parser(
         "notify", help="手动推送最新一期状态到微信（SENDKEY 测试）"
     )
     p_notify.set_defaults(func=cmd_notify)
 
-    p_test = sub.add_parser("selftest", help="随机生成模块自测")
+    p_test = sub.add_parser("selftest", help="生成模块与中奖规则自测")
     p_test.add_argument("--iterations", type=int, default=5000)
     p_test.set_defaults(func=cmd_selftest)
 

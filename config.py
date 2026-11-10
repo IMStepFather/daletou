@@ -15,8 +15,15 @@ BACK_MIN = 1
 BACK_MAX = 12
 BACK_COUNT = 2
 
-# ---- 调度：仅周一/周三/周六执行（周一=0，周三=2，周六=5） ----
-DRAW_WEEKDAYS = (0, 2, 5)
+# ---- 调度：开奖日周一/三/六；预测在开奖日次日 09:00 生成 ----
+DRAW_WEEKDAYS = (0, 2, 5)       # 开奖日（周一=0，周三=2，周六=5）
+PREDICT_WEEKDAYS = (1, 3, 6)    # 预测生成日（周二=1，周四=3，周日=6）
+
+# ---- 规则与成本 ----
+COST_PER_TICKET = 3             # 单式 1 注：基本投注 2 元 + 追加投注 1 元
+RULE_SOURCE_URL = (
+    "https://www.shsportslottery.com/shxw/1217556253.html"
+)
 
 # ---- 数据与输出文件（数据真相在 CSV，其余为渲染产物） ----
 RECORDS_CSV = BASE_DIR / "records.csv"

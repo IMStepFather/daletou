@@ -7,8 +7,8 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Asia/Shanghai
 
-# Mon/Wed/Sat 09:05 generate + notify
-5 9 * * 1,3,6 /opt/daletou/run.sh generate >> /opt/daletou/logs/cron.log 2>&1
+# Sun/Tue/Thu 09:00: day after a draw, predict the NEXT draw (Mon/Wed/Sat)
+0 9 * * 0,2,4 /opt/daletou/run.sh generate >> /opt/daletou/logs/cron.log 2>&1
 # Mon/Wed/Sat 21:35 / 22:30 / 23:30 fetch (retry if data not published yet).
 # All runs are idempotent: already-filled records are never re-fetched or re-notified.
 35 21 * * 1,3,6 /opt/daletou/run.sh fetch >> /opt/daletou/logs/cron.log 2>&1

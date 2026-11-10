@@ -56,8 +56,8 @@ mkdir -p "$APP_DIR/logs"
 
 # 2) 拷贝脚本（源文件位于当前目录）
 FILES=(config.py generator.py storage.py report.py fetcher.py notify.py lotto.py
-       fetch_results.py prize_rules.py requirements.txt run.sh daletou.cron
-       .env.example)
+       fetch_results.py prize_rules.py pages_setup.py requirements.txt
+       run.sh sync_pages.sh daletou.cron .env.example)
 copied=0
 for f in "${FILES[@]}"; do
   if [[ -f "$f" ]]; then
@@ -78,7 +78,7 @@ for f in "$APP_DIR"/*.sh "$APP_DIR"/*.cron; do
     sed -i 's/\r$//' "$f"
   fi
 done
-chmod +x "$APP_DIR/run.sh"
+chmod +x "$APP_DIR/run.sh" "$APP_DIR/sync_pages.sh"
 echo "[部署] 已拷贝 $copied 个文件并规范化行尾（CRLF -> LF）"
 
 # 4) 依赖：优先 apt 系统包（Ubuntu 24.04 受 PEP 668 限制，裸 pip 会失败）
@@ -123,7 +123,7 @@ $PY - "$APP_DIR" <<'PYEOF' || true
 import sys
 sys.path.insert(0, sys.argv[1])
 try:
-    import config, generator, storage, report, fetcher, notify, fetch_results, prize_rules
+    import config, generator, storage, report, fetcher, notify, fetch_results, prize_rules, pages_setup
 except ImportError as exc:
     print("[警告] 模块导入失败:", exc)
     sys.exit(0)

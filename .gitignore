@@ -10,6 +10,9 @@ logs/
 *.tmp
 *.log
 .fetch.lock
+.pages.sha256
+.pages.lock
+.pages.stage/
 
 # 本地协作记忆与编辑器残留（不纳入版本库）
 .workbuddy/

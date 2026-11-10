@@ -6,10 +6,30 @@
 # 自动修复 CRLF 行尾（Windows 传输引入会导致 shebang 与 cron 失效）；
 # 依赖安装走 apt 系统包优先、pip 兜底（兼容 Ubuntu 24.04 的 PEP 668 限制）。
 # 不自动写入 crontab，避免覆盖用户既有任务。
+# Guard 1: sourcing this file would apply 'set -e' to the caller's shell
+# and terminate the interactive SSH session. Reject before any shell option.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  printf '[ERROR] Run as: bash deploy.sh [APP_DIR]. Do not source this file.\n' >&2
+  return 1
+fi
 set -euo pipefail
 
 APP_DIR="${1:-/opt/daletou}"
 PY="${PYTHON:-python3}"
+
+# Guard 2: source dir must differ from install dir, otherwise every 'cp'
+# reports "are the same file" and the deploy aborts.
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+if [[ -d "$APP_DIR" ]]; then
+  APP_DIR_REAL="$(cd "$APP_DIR" && pwd -P)"
+else
+  APP_DIR_REAL="$APP_DIR"
+fi
+if [[ "$SRC_DIR" == "$APP_DIR_REAL" ]]; then
+  printf '[ERROR] Source directory equals install directory: %s\n' "$SRC_DIR" >&2
+  printf '[HINT] Run from the git checkout (e.g. ~/daletou), not from %s\n' "$APP_DIR" >&2
+  exit 1
+fi
 
 echo "[部署] 目标目录：$APP_DIR"
 echo "[部署] Python：$($PY --version 2>&1)"

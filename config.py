@@ -31,6 +31,11 @@ RESULTS_MD = BASE_DIR / "results.md"
 RESULTS_XLSX = BASE_DIR / "results.xlsx"
 RESULTS_HTML = BASE_DIR / "results.html"
 
+# ---- 报表展示 ----
+# 表格/页面仅展示最近 N 期，避免行数与 HTML 体积随期数无限增长；
+# records.csv 仍保留全部历史，累计统计也按全量计算。
+DISPLAY_MAX_PERIODS = 20
+
 # ---- 抓取参数 ----
 FETCH_MIN_ISSUES = 30        # 每次最少抓取期数
 FETCH_MAX_ISSUES = 200       # 每次最多抓取期数（约 466 天）

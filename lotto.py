@@ -30,6 +30,7 @@ from config import (
     BACK_MIN,
     CN_TZ,
     COST_PER_TICKET,
+    DISPLAY_MAX_PERIODS,
     DRAW_WEEKDAYS,
     FRONT_COUNT,
     FRONT_MAX,
@@ -265,7 +266,11 @@ def cmd_report(args: argparse.Namespace) -> int:
         records = load_records()
         print(f"[重算] 已补算 {len(result['fixed'])} 期历史记录并写回 records.csv。")
     render_all(records)
-    print(f"[报表] 已渲染 {len(records)} 期记录：results.md / results.xlsx / results.html。")
+    print(
+        f"[报表] 共 {len(records)} 期，表格展示最近 "
+        f"{min(len(records), DISPLAY_MAX_PERIODS)} 期："
+        "results.md / results.xlsx / results.html。"
+    )
     return 0
 
 

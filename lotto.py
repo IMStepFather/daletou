@@ -2,24 +2,26 @@
 
 子命令
 ------
-generate   开奖日次日（周二/四/日）生成下一期预测号码；记录日期为
-           目标开奖日，并写入推算期号；同日期幂等
+generate   生成「下一个尚未开奖的开奖日」预测号码；支持 --target 补生成
+           指定开奖日、--offline 跳过期号抓取；同日期幂等，漏跑自动补齐
 record     手动补录某期开奖号码，按固定奖低档计算收益（浮动奖需 fetch 重算）
 fetch      抓取与预测日期对应的开奖结果（薄封装，转交独立脚本
            fetch_results.py 执行；两个入口共用同一实现）
 report     从 records.csv 重新渲染 results.md / results.xlsx / results.html
+           渲染前自动离线补算历史「待计算」期次
+recalc     离线重算所有「已有开奖号码但奖金为空」的历史期次
 notify     手动推送最新一期状态到微信（兼作 SENDKEY 连通性测试）
 rules      校验官网开奖规则是否与本地固化规则一致
 selftest   自测（生成结构/均匀性/星期 + 中奖规则 13 条件）
 
 通知说明：generate / record / fetch 成功后自动推送微信（Server酱，
-SENDKEY 取环境变量 SERVERCHAN_SENDKEY 或 config.py）；推送失败仅告警，
-不影响主流程退出码。
+SENDKEY 取环境变量 SERVERCHAN_SENDKEY 或 config.py）；generate 可用
+--no-notify 跳过，recalc 默认不推送。推送失败仅告警，不影响退出码。
 """
 import argparse
 import sys
 from collections import Counter
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import List
 
 from config import (
@@ -28,12 +30,18 @@ from config import (
     BACK_MIN,
     CN_TZ,
     COST_PER_TICKET,
+    DRAW_WEEKDAYS,
     FRONT_COUNT,
     FRONT_MAX,
     FRONT_MIN,
     PREDICT_WEEKDAYS,
 )
-from fetcher import fetch_latest, next_draw_date, next_issue
+from fetcher import (
+    fetch_latest,
+    next_draw_date,
+    next_issue,
+    previous_draw_date,
+)
 from generator import generate_ticket, is_draw_day
 from notify import build_compare_message, build_generate_message, send_wechat
 from prize_rules import (
@@ -50,6 +58,7 @@ from storage import (
     load_records,
     parse_zone,
     profit_summary,
+    recalc_unsettled,
     set_actual,
 )
 
@@ -60,13 +69,33 @@ def format_zone(nums: List[int]) -> str:
     return " ".join(f"{n:02d}" for n in nums)
 
 
-def _today_cn() -> date:
-    """统一按上海时区取业务日期；Windows 缺 tzdata 时回退本地时间。"""
+DRAW_CUTOFF_HOUR = 21   # 开奖约 21:25；此后不再把当天视为「待开奖」
+
+
+def _now_cn() -> datetime:
+    """统一按上海时区取当前时间；Windows 缺 tzdata 时回退本地时间。"""
     try:
         from zoneinfo import ZoneInfo
-        return datetime.now(ZoneInfo(CN_TZ)).date()
+        return datetime.now(ZoneInfo(CN_TZ))
     except (ImportError, KeyError, ValueError):
-        return date.today()
+        return datetime.now()
+
+
+def _today_cn() -> date:
+    """统一按上海时区取业务日期；Windows 缺 tzdata 时回退本地时间。"""
+    return _now_cn().date()
+
+
+def upcoming_draw_date(today: date, hour: int) -> date:
+    """返回「下一个尚未开奖」的开奖日，供 generate 自愈使用。
+
+    若今天是开奖日且尚未到开奖时段，则今天即为待开奖期；否则取
+    严格晚于今天的第一个开奖日。已过去的开奖日永不补生成，避免
+    在开奖后伪造预测。
+    """
+    if today.weekday() in DRAW_WEEKDAYS and hour < DRAW_CUTOFF_HOUR:
+        return today
+    return next_draw_date(today)
 
 
 def _notify(title: str, body: str) -> None:
@@ -76,40 +105,57 @@ def _notify(title: str, body: str) -> None:
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
-    """在开奖日次日 09:00 生成「下一期」预测。
+    """生成「下一个尚未开奖」的预测；支持 --target 补生成指定开奖日。
 
     records.csv 的 date 记目标开奖日（周一/三/六），保证 fetch 的
-    「严格按日期匹配开奖结果」规则不变；expected_issue 由网页最新
-    期号推算，网络异常时留空并降级，不影响号码生成。
+    「严格按日期匹配开奖结果」规则不变。每次执行先检查目标日期是否
+    已有记录：缺失则补齐（cron 漏跑自愈），已存在则幂等退出。
     """
     today = _today_cn()
-    if today.weekday() not in PREDICT_WEEKDAYS and not args.force:
-        print(
-            f"[拒绝] 今天是星期{WEEKDAY_CN[today.weekday()]}，"
-            f"非预测生成日（开奖日次日：周二/四/日 09:00）。"
-            f"如确需生成请附加 --force。"
-        )
-        return 1
+    target_arg = getattr(args, "target", None)
 
-    target = next_draw_date(today)
-    ticket = generate_ticket(target)
-    expected_issue = ""
-    try:
-        latest = fetch_latest()
-        yesterday = (today - timedelta(days=1)).isoformat()
-        if latest["date"] == yesterday:
-            expected_issue = next_issue(latest["issue"], target)
-        else:
+    if target_arg:
+        try:
+            target = datetime.strptime(target_arg, "%Y-%m-%d").date()
+        except ValueError:
+            print(f"[失败] 日期格式错误: {target_arg!r}，应为 YYYY-MM-DD。")
+            return 1
+        if not is_draw_day(target):
             print(
-                f"[警告] 网页最新一期为 第{latest['issue']}期（{latest['date']}），"
-                f"非 {yesterday}；可能因休市或数据延迟，本期不写预测期号。"
+                f"[拒绝] {target} 周{WEEKDAY_CN[target.weekday()]} "
+                f"不是开奖日（周一/三/六）。"
             )
-    except (OSError, ValueError, UnicodeError, IndexError, KeyError) as exc:
-        print(
-            f"[警告] 抓取最新期号失败（{exc}）；仍生成号码，"
-            f"期号留空，开奖回填时以实际期号补齐。"
-        )
+            return 1
+        mode = "补生成"
+    else:
+        target = upcoming_draw_date(today, _now_cn().hour)
+        mode = "自愈补生成" if today.weekday() not in PREDICT_WEEKDAYS else "生成"
 
+    if any(r["date"] == target.isoformat() for r in load_records()):
+        print(f"[跳过] {target} 已存在预测记录，同日期不重复生成（幂等）。")
+        return 0
+
+    expected_issue = ""
+    if not getattr(args, "offline", False):
+        try:
+            latest = fetch_latest()
+            prev = previous_draw_date(target)
+            if latest["date"] == prev.isoformat():
+                expected_issue = next_issue(latest["issue"], target)
+            else:
+                print(
+                    f"[警告] 网页最新一期为 第{latest['issue']}期（{latest['date']}），"
+                    f"非上一开奖日 {prev}；本期不写预测期号。"
+                )
+        except (OSError, ValueError, UnicodeError, IndexError, KeyError) as exc:
+            print(
+                f"[警告] 抓取最新期号失败（{exc}）；仍生成号码，"
+                f"期号留空，开奖回填时以实际期号补齐。"
+            )
+    else:
+        print("[离线] 已跳过期号抓取，expected_issue 留空。")
+
+    ticket = generate_ticket(target)
     ticket["expected_issue"] = expected_issue
     if not append_ticket(ticket):
         print(f"[拒绝] {ticket['date']} 已生成过，同日期不重复生成（幂等）。")
@@ -117,16 +163,19 @@ def cmd_generate(args: argparse.Namespace) -> int:
     render_all(load_records())
     issue_text = f"第{expected_issue}期" if expected_issue else "期号待定"
     print(
-        f"[生成] 目标开奖日 {ticket['date']}（周{WEEKDAY_CN[target.weekday()]}）"
+        f"[{mode}] 目标开奖日 {ticket['date']}（周{WEEKDAY_CN[target.weekday()]}）"
         f" {issue_text} "
         f"前区: {format_zone(ticket['front'])}  "
         f"后区: {format_zone(ticket['back'])}"
     )
     print("[存储] 已写入 records.csv；报表已刷新：results.md / results.xlsx / results.html。")
-    title, body = build_generate_message(
-        ticket, WEEKDAY_CN[target.weekday()]
-    )
-    _notify(title, body)
+    if getattr(args, "no_notify", False):
+        print("[通知] 已按 --no-notify 跳过。")
+    else:
+        title, body = build_generate_message(
+            ticket, WEEKDAY_CN[target.weekday()]
+        )
+        _notify(title, body)
     return 0
 
 
@@ -191,13 +240,52 @@ def cmd_record(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_recalc(result: dict) -> None:
+    """打印离线重算明细（report 与 recalc 共用）。"""
+    for item in result["fixed"]:
+        print(
+            f"[重算] {item['date']} 前区 {item['hits'][0]}/5 · "
+            f"后区 {item['hits'][1]}/2 → {item['level']} / ¥{item['prize']}"
+        )
+    for item in result["pending"]:
+        print(
+            f"[待联网] {item['date']} {item['level']}：浮动奖数据缺失，"
+            f"请执行 ./run.sh fetch --force-correct --no-notify"
+        )
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     records = load_records()
     if not records:
         print("[提示] records.csv 为空，尚未生成任何号码。")
         return 1
+    result = recalc_unsettled(records)
+    if result["changed"]:
+        _print_recalc(result)
+        records = load_records()
+        print(f"[重算] 已补算 {len(result['fixed'])} 期历史记录并写回 records.csv。")
     render_all(records)
     print(f"[报表] 已渲染 {len(records)} 期记录：results.md / results.xlsx / results.html。")
+    return 0
+
+
+def cmd_recalc(args: argparse.Namespace) -> int:
+    """离线重算历史期次的奖级 / 奖金 / 成本 / 收益（不联网、不推送）。"""
+    records = load_records()
+    result = recalc_unsettled(records)
+    if not result["fixed"] and not result["pending"]:
+        print("[重算] 无待补算记录，所有已开奖期次均已结算。")
+        return 0
+    _print_recalc(result)
+    if result["changed"]:
+        render_all(load_records())
+        print("[重算] 已写回 records.csv 并刷新 results.md / results.xlsx / results.html。")
+    p = profit_summary(load_records())
+    net = f"-¥{abs(p['net'])}" if p["net"] < 0 else f"¥{p['net']}"
+    print(
+        f"[收益] 已结算 {p['periods']} 期：投入 ¥{p['total_cost']}，"
+        f"奖金 ¥{p['total_prize']}，净收益 {net}。"
+    )
     return 0
 
 
@@ -413,12 +501,22 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_gen = sub.add_parser(
-        "generate", help="生成下一期号码（开奖日次日：周二/四/日）"
+        "generate", help="生成下一期号码（幂等；漏跑自动补齐）"
     )
     p_gen.add_argument(
-        "--force",
-        action="store_true",
-        help="跳过预测日校验强制生成（测试/补生成用）",
+        "--target", metavar="YYYY-MM-DD",
+        help="补生成指定开奖日的预测（须为周一/三/六，同日期幂等）",
+    )
+    p_gen.add_argument(
+        "--offline", action="store_true",
+        help="跳过网页期号抓取，expected_issue 留空（无网环境）",
+    )
+    p_gen.add_argument(
+        "--no-notify", action="store_true", help="生成后不推送微信",
+    )
+    p_gen.add_argument(
+        "--force", action="store_true",
+        help="保留兼容参数；自愈逻辑已自动处理非预测日",
     )
     p_gen.set_defaults(func=cmd_generate)
 
@@ -436,6 +534,15 @@ def main() -> int:
 
     p_rep = sub.add_parser("report", help="从 records.csv 重新渲染报表")
     p_rep.set_defaults(func=cmd_report)
+
+    p_calc = sub.add_parser(
+        "recalc", help="离线重算历史期次的奖级 / 奖金 / 收益"
+    )
+    p_calc.add_argument(
+        "--no-notify", action="store_true",
+        help="保留参数以统一命令风格（recalc 默认不推送）",
+    )
+    p_calc.set_defaults(func=cmd_recalc)
 
     p_fetch = sub.add_parser(
         "fetch", help="抓取与预测日期对应的开奖结果（转交独立脚本）"

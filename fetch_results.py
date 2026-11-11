@@ -20,7 +20,8 @@
 - fcntl 非阻塞文件锁，Windows 无 fcntl 时降级为不加锁；
 - 业务日期统一 Asia/Shanghai；
 - 仅回填与预测日期严格相等的期次，其余期次只作内存索引，绝不落库；
-- 批次校验失败整批拒绝，不写脏数据。
+- 批次校验失败整批拒绝，不写脏数据；
+- 回填前自动离线补算旧版 CSV 遗留的「待计算」期次（--dry-run 除外）。
 """
 import argparse
 import contextlib
@@ -53,7 +54,7 @@ from fetcher import (
 from notify import build_compare_message, send_wechat
 from prize_rules import evaluate
 from report import render_all
-from storage import load_records, set_actual
+from storage import load_records, recalc_unsettled, set_actual
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -159,6 +160,26 @@ def _body(
     force_correct: bool,
     dry_run: bool,
 ) -> int:
+    # 历史遗留：旧版 CSV 无 prize 列，先离线补算，保证任何入口刷新报表前
+    # 都已结算。--dry-run 严格只读，跳过该步骤。
+    recalc = {"fixed": [], "pending": [], "changed": False}
+    if not dry_run:
+        recalc = recalc_unsettled(load_records())
+        if recalc["changed"]:
+            for item in recalc["fixed"]:
+                print(
+                    f"[重算] {item['date']} 前区 {item['hits'][0]}/5 · "
+                    f"后区 {item['hits'][1]}/2 → "
+                    f"{item['level']} / ¥{item['prize']}"
+                )
+            for item in recalc["pending"]:
+                print(
+                    f"[待联网] {item['date']} {item['level']}："
+                    f"浮动奖数据缺失，请用 --force-correct 重算"
+                )
+            render_all(load_records())
+            print("[重算] 已补算历史期次并刷新 results.md / results.xlsx / results.html。")
+
     records = load_records()
 
     invalid = [
@@ -178,6 +199,9 @@ def _body(
         r for r in candidates if r["actual_front"] is None
     ]
     if not pending:
+        if recalc["changed"]:
+            print("[提示] 无待对比记录；本次已完成历史重算。")
+            return EXIT_OK
         print("[提示] 无待对比记录，无需抓取。")
         return EXIT_NO_WORK
 

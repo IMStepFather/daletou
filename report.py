@@ -82,8 +82,8 @@ def _rows(records: List[dict]) -> list:
                 "预测", _fmt(r["front"]), _fmt(r["back"]), hit_text, "--", "--",
             ],
             [
-                "", _issue_actual(r), "开奖", af, ab, "",
-                _prize_text(r), _profit_text(r),
+                f"{r['date']} 周{_weekday(r['date'])}", _issue_actual(r),
+                "开奖", af, ab, "", _prize_text(r), _profit_text(r),
             ],
         ))
     return out

@@ -113,7 +113,8 @@ def load_records() -> List[dict]:
     """读取全部记录，按日期从近到远返回；文件不存在返回空表。"""
     if not RECORDS_CSV.exists():
         return []
-    with RECORDS_CSV.open("r", encoding="utf-8", newline="") as f:
+    # utf-8-sig 兼容 Excel 另存 / 编辑器写入的 BOM；无 BOM 时与 utf-8 等价。
+    with RECORDS_CSV.open("r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
     records = [_to_record(r) for r in rows]
     records.sort(key=lambda r: r["date"], reverse=True)
@@ -256,3 +257,50 @@ def profit_summary(records: List[dict]) -> dict:
         "net": total_prize - total_cost,
         "winning_periods": sum(1 for r in settled if r["prize"] > 0),
     }
+
+
+def recalc_unsettled(records: List[dict]) -> dict:
+    """离线补算「已有开奖号码但 prize 为空」的历史记录。
+
+    旧版 CSV（11-04 升级 12 列之前）没有 prize 列，升级后这些期次
+    显示为「待计算 / 待重算」，且不进入收益统计。本函数按已有开奖号码
+    重新判定奖级：
+
+    - 未中奖 / 固定奖（三至七等奖）：可离线确定；pool 未知按低档保守计；
+    - 浮动奖（一、二等奖）：缺少页面公布的基本单注奖金，保持 None，
+      由 ``fetch --force-correct`` 联网重算。
+
+    仅在字段实际变化时原子写回，保证 report / fetch 反复调用幂等。
+    返回 {"fixed": [...], "pending": [...], "changed": bool}。
+    """
+    from prize_rules import evaluate
+
+    fixed: List[dict] = []
+    pending: List[dict] = []
+    dirty = False
+    for r in records:
+        if r["actual_front"] is None or r.get("prize") is not None:
+            continue
+        h = hits(r)
+        if h is None:
+            continue
+        result = evaluate(h[0], h[1], r.get("pool"), None, None)
+        if (
+            r.get("prize_level", "") != result["level_name"]
+            or r.get("prize") != result["prize"]
+            or r.get("cost") != result["cost"]
+        ):
+            dirty = True
+        r["prize_level"] = result["level_name"]
+        r["prize"] = result["prize"]
+        r["cost"] = result["cost"]
+        item = {
+            "date": r["date"],
+            "hits": h,
+            "level": result["level_name"],
+            "prize": result["prize"],
+        }
+        (fixed if result["prize"] is not None else pending).append(item)
+    if dirty:
+        save_records(records)
+    return {"fixed": fixed, "pending": pending, "changed": dirty}

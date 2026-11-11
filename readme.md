@@ -37,15 +37,16 @@
 Python 3.10+，零必需第三方依赖（openpyxl 仅用于生成 xlsx，缺失时自动跳过）。
 
 ```bash
-cp .env.example .env          # 填入 Server酱 SENDKEY；留空则不推送
-./run.sh selftest             # 含中奖规则 13 条件与两档奖金校验
-./run.sh rules                # 校验官网规则是否与本地一致
-./run.sh generate --force     # 正式由 cron 在周二/四/日 09:00 触发，无需 --force
-./run.sh fetch --dry-run      # 预览待回填记录
-./run.sh report               # 从 records.csv 重渲染三份报表
+cp .env.example .env                                        # 填入 Server酱 SENDKEY；留空则不推送
+./run.sh selftest                                           # 含中奖规则 13 条件与两档奖金校验
+./run.sh rules                                              # 校验官网规则是否与本地一致
+./run.sh generate --target 2026-11-11 --offline --no-notify   # 补生成指定开奖日
+./run.sh recalc --no-notify                                 # 离线重算历史「待计算」期次
+./run.sh fetch --dry-run                                    # 预览待回填记录
+./run.sh report                                             # 重渲染三份报表（渲染前自动重算）
 ```
 
-手动执行请走 `./run.sh <子命令>`：直接 `python3 lotto.py ...` 不会加载 `.env`，微信推送会失效。`fetch` 支持 `--dry-run` / `--no-notify` / `--force-correct`，退出码 `0 成功 / 1 失败 / 2 无待办`；`generate` / `fetch` / `record` 有数据变化时会推送微信。
+手动执行请走 `./run.sh <子命令>`：直接 `python3 lotto.py ...` 不会加载 `.env`，微信推送会失效。`generate` 支持 `--target`（补生成指定开奖日）/ `--offline`（无网时跳过期号抓取）/ `--no-notify`；`fetch` 支持 `--dry-run` / `--no-notify` / `--force-correct`，退出码 `0 成功 / 1 失败 / 2 无待办`；`generate` / `fetch` / `record` 有数据变化时会推送微信，`recalc` 默认不推送。
 
 ## VPS 部署（Ubuntu）
 
@@ -54,20 +55,38 @@ git clone https://github.com/IMStepFather/daletou.git ~/daletou && cd ~/daletou
 bash deploy.sh                       # 安装到 /opt/daletou，已存在的 .env 不覆盖
 vi /opt/daletou/.env                 # SERVERCHAN_SENDKEY=...
 crontab -l > ~/crontab.bak 2>/dev/null || true
-( crontab -l 2>/dev/null | sed 's/\r$//' | grep -v 'daletou/run.sh' | grep -v '^CRON_TZ='; cat /opt/daletou/daletou.cron ) | crontab -
+( crontab -l 2>/dev/null | sed 's/\r$//' | grep -v -e 'daletou' -e '^CRON_TZ=' -e '^SHELL=' -e '^PATH=' -e '^#'; cat /opt/daletou/daletou.cron ) | crontab -
 cd /opt/daletou && ./run.sh fetch --dry-run
 ```
 
-私有仓库在 VPS 上需配置只读 SSH deploy key 或 fine-grained PAT。crontab **必须追加安装**，不要用 `crontab daletou.cron` 整体覆盖（会抹掉腾讯云 stargate 等既有任务）。
+私有仓库在 VPS 上需配置只读 SSH deploy key 或 fine-grained PAT。crontab **必须追加安装**，不要用 `crontab daletou.cron` 整体覆盖（会抹掉腾讯云 stargate 等既有任务）。上面命令会先移除旧的 daletou 任务块、环境变量行与注释行（避免 `sync_pages.sh` 被重复追加），其他任务行原样保留。
 
 日常更新：`cd ~/daletou && git pull --ff-only && bash deploy.sh`。
 
 ## 定时任务与关键约定
 
-- 周二/四/日 **09:00** 生成下一期预测：记录的 `date` 写目标开奖日（周一/三/六），`expected_issue` 由网页最新期号 +1 推算；抓取失败时号码照常生成、期号留空。
+- **每天 09:00** 幂等检查并生成「下一个尚未开奖」的预测（实际仍落在开奖日次日）：`date` 写目标开奖日（周一/三/六），`expected_issue` 由网页上一开奖日期号 +1 推算；已有记录则跳过，cron 漏跑时下次自动补齐，已开奖的日期不会补生成。
 - 开奖日 **21:35 / 22:30 / 23:30** 三次抓取重试（幂等，不会重复推送），回填实际期号、奖池、奖级与奖金。
 - 开奖结果**仅按日期严格相等**回填，期号只作留痕与展示，不作匹配键（休市/改期时可安全降级）。
 - 时区统一 `Asia/Shanghai`；`.sh` / `.cron` 必须为 LF（由 `.gitattributes` 强制）。
+
+## 补生成与历史重算
+
+**补生成漏跑期次**：`generate` 每次执行都检查「下一个尚未开奖的开奖日」是否已有记录，缺失即补齐；也可用 `--target` 显式指定（必须是周一/三/六，同日期幂等）。已过去的开奖日不会补生成，避免在开奖后伪造预测。
+
+```bash
+./run.sh generate --target 2026-11-11 --offline --no-notify
+```
+
+**历史「待计算」期次**：11-04 升级 12 列 CSV 之前的记录没有 `prize` 列，报表会显示「待计算 / 待重算」且不进入收益统计。`recalc` 按已有开奖号码离线重算：未中奖与固定奖可确定算出；浮动奖（一、二等奖）缺少页面公布的基本单注奖金时保持待重算。`report` 与 `fetch` 在刷新报表前也会自动兜底，反复执行幂等。
+
+```bash
+./run.sh recalc --no-notify                     # 离线补算奖级 / 奖金 / 收益
+./run.sh fetch --force-correct --no-notify      # 联网补齐期号 / 奖池 / 浮动奖奖金
+./run.sh report
+```
+
+`fetch --force-correct` 会把全部已开奖期次纳入重算，用 500.com 的 15 列数据补齐 `issue` / `pool` 与奖金，建议配合 `--no-notify` 避免重复推送。`--dry-run` 严格只读，不会触发重算写库。报表刷新后，Pages 的 5 分钟同步任务会自动更新公开页面。
 
 ## Cloudflare Pages 报表同步（可选）
 

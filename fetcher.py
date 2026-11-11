@@ -181,6 +181,19 @@ def next_draw_date(after: date) -> date:
     raise ValueError("一周内未找到开奖日，请检查 DRAW_WEEKDAYS 配置")
 
 
+def previous_draw_date(before: date) -> date:
+    """返回严格早于 before 的最近一个开奖日（周一/三/六）。
+
+    用于生成预测时校验「网页最新一期是否为上一开奖日」，比固定的
+    「昨天」更稳健：补生成指定开奖日、休市改期等场景同样适用。
+    """
+    for delta in range(1, 8):
+        candidate = before - timedelta(days=delta)
+        if candidate.weekday() in DRAW_WEEKDAYS:
+            return candidate
+    raise ValueError("一周内未找到开奖日，请检查 DRAW_WEEKDAYS 配置")
+
+
 def next_issue(latest_issue: str, target_date: date) -> str:
     """按「期号按当年开奖次数排序」推算下一期期号。
 

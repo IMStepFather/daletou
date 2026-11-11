@@ -1,14 +1,18 @@
 # daletou cron jobs (ASCII only, LF line endings required).
 # IMPORTANT: install by APPENDING. Never run "crontab daletou.cron",
 # it would erase existing jobs (e.g. Tencent Cloud stargate monitor).
-#   ( crontab -l 2>/dev/null | sed 's/\r$//' | grep -v 'daletou/run.sh' | grep -v '^CRON_TZ='; \
+# Filter the whole old daletou block (including sync_pages.sh) to avoid duplicates.
+#   ( crontab -l 2>/dev/null | sed 's/\r$//' \
+#       | grep -v -e 'daletou' -e '^CRON_TZ=' -e '^SHELL=' -e '^PATH=' -e '^#'; \
 #     cat /opt/daletou/daletou.cron ) | crontab -
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Asia/Shanghai
 
-# Sun/Tue/Thu 09:00: day after a draw, predict the NEXT draw (Mon/Wed/Sat)
-0 9 * * 0,2,4 /opt/daletou/run.sh generate >> /opt/daletou/logs/cron.log 2>&1
+# Every day 09:00: idempotent self-heal. Ensures the upcoming draw always
+# has a prediction row even if a scheduled run was missed. No-op when the
+# record exists (append_ticket rejects duplicate dates).
+0 9 * * * /opt/daletou/run.sh generate >> /opt/daletou/logs/cron.log 2>&1
 # Mon/Wed/Sat 21:35 / 22:30 / 23:30 fetch (retry if data not published yet).
 # All runs are idempotent: already-filled records are never re-fetched or re-notified.
 35 21 * * 1,3,6 /opt/daletou/run.sh fetch >> /opt/daletou/logs/cron.log 2>&1

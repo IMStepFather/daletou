@@ -138,7 +138,7 @@ PYEOF
 echo
 echo "[部署] crontab 请用追加方式安装（保留已有任务，勿整体覆盖）："
 echo "    crontab -l > ~/crontab.bak 2>/dev/null || true"
-echo "    ( crontab -l 2>/dev/null | sed 's/\r\$//' | grep -v 'daletou/run.sh' | grep -v '^CRON_TZ='; cat $APP_DIR/daletou.cron ) | crontab -"
+echo "    ( crontab -l 2>/dev/null | sed 's/\r\$//' | grep -v -e 'daletou' -e '^CRON_TZ=' -e '^SHELL=' -e '^PATH=' -e '^#'; cat $APP_DIR/daletou.cron ) | crontab -"
 echo
 echo "[部署] 手动验证命令（务必用 run.sh，它会加载 .env）："
 echo "    cd $APP_DIR && ./run.sh selftest"

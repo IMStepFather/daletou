@@ -250,13 +250,20 @@ def render_xlsx(records: List[dict]) -> bool:
         cell.alignment = center
         cell.border = border
 
+    # 预测行（白底深字）与开奖行（浅蓝灰底柔字）保持与 HTML 相同的对比语义
+    predict_fill = PatternFill("solid", fgColor="FFFFFF")
+    actual_fill = PatternFill("solid", fgColor="EEF3F8")
     row = header_row + 1
     for pred, actual in _rows(shown):
-        for values in (pred, actual):
+        for idx, values in enumerate((pred, actual)):
+            fill = predict_fill if idx == 0 else actual_fill
+            color = "1F2733" if idx == 0 else "55606F"
             for col, v in enumerate(values, start=1):
                 cell = ws.cell(row=row, column=col, value=v)
                 cell.alignment = center
                 cell.border = border
+                cell.fill = fill
+                cell.font = Font(color=color, bold=(col == 3))
             row += 1
 
     for col, width in zip("ABCDEFGH", (16, 18, 8, 18, 14, 22, 18, 18)):
@@ -279,10 +286,12 @@ def render_html(records: List[dict]) -> None:
     shown = _display_records(records)
     rows_html = []
     for pred, actual in _rows(shown):
-        # 号码列渲染为圆点徽章，其余列纯文本，保持与 md / xlsx 一致
+        # 号码列渲染为圆点徽章，类型列渲染为语义徽章，其余列纯文本。
+        # 三种格式仍读同一份 _rows() 数据，仅 HTML 追加 class / 徽章。
         rows_html.append(
             "<tr class=\"row-predict\">"
-            + "".join(f"<td>{escape(str(v))}</td>" for v in pred[:3])
+            + "".join(f"<td>{escape(str(v))}</td>" for v in pred[:2])
+            + f'<td><span class="tag tag-predict">{escape(str(pred[2]))}</span></td>'
             + f"<td>{_ball_badges_from_text(pred[3], 'b-front')}</td>"
             + f"<td>{_ball_badges_from_text(pred[4], 'b-back')}</td>"
             + "".join(f"<td>{escape(str(v))}</td>" for v in pred[5:])
@@ -290,7 +299,8 @@ def render_html(records: List[dict]) -> None:
         )
         rows_html.append(
             "<tr class=\"row-actual\">"
-            + "".join(f"<td>{escape(str(v))}</td>" for v in actual[:3])
+            + "".join(f"<td>{escape(str(v))}</td>" for v in actual[:2])
+            + f'<td><span class="tag tag-actual">{escape(str(actual[2]))}</span></td>'
             + f"<td>{_ball_badges_from_text(actual[3], 'b-front')}</td>"
             + f"<td>{_ball_badges_from_text(actual[4], 'b-back')}</td>"
             + "".join(f"<td>{escape(str(v))}</td>" for v in actual[5:])
@@ -318,11 +328,21 @@ h1{{font-size:20px}} h2{{font-size:15px;margin:0 0 6px}}
 .tablewrap{{overflow-x:auto}}
 table{{border-collapse:collapse;width:100%;font-size:14px;min-width:760px}}
 th,td{{border:1px solid #d0d0d0;padding:6px 8px;text-align:center;white-space:nowrap}}
-th{{background:#ececec}}
-.row-actual td{{color:#555;background:#fafafa}}
-.b-front,.b-back{{display:inline-block;min-width:26px;height:26px;line-height:26px;
-  border-radius:50%;color:#fff;margin:2px;font-size:13px;font-weight:600}}
+th{{background:#e2e8f0}}
+.row-predict td{{background:#ffffff;color:#1f2733}}
+.row-actual td{{background:#eef3f8;color:#55606f}}
+.row-predict td:first-child{{box-shadow:inset 3px 0 0 #185fa5}}
+.row-actual td:first-child{{box-shadow:inset 3px 0 0 #98a5b6}}
+.tag{{display:inline-block;min-width:36px;padding:1px 8px;border-radius:10px;
+  font-size:12px;font-weight:600;line-height:1.6}}
+.tag-predict{{background:#e6f1fb;color:#185fa5}}
+.tag-actual{{background:#e4e9f0;color:#55606f}}
+.b-front,.b-back{{display:inline-block;box-sizing:border-box;vertical-align:middle;
+  min-width:26px;height:26px;line-height:24px;border-radius:50%;color:#fff;
+  margin:2px;font-size:13px;font-weight:600;border:1px solid transparent}}
 .b-front{{background:#c2780a}} .b-back{{background:#185fa5}}
+.row-actual .b-front{{background:#fff7ea;color:#a8630a;border-color:#c2780a}}
+.row-actual .b-back{{background:#eaf3fc;color:#185fa5;border-color:#185fa5}}
 .pending{{color:#999}} .scope{{color:#666;font-size:13px;margin:0 0 8px}}
 .note{{color:#888;font-size:12px;margin-top:12px}}
 </style>

@@ -114,7 +114,9 @@ def _get_project(account: str, project: str, token: str):
 def cmd_create(account: str, project: str, token: str) -> int:
     result, err = _get_project(account, project, token)
     if result is not None:
+        sub = result.get("subdomain") or f"{project}.pages.dev"
         print(f"[项目] {project} 已存在，跳过创建。")
+        print(f"[回退地址] https://{sub}")
         return 0
     if err and ("HTTP 401" in err or "HTTP 403" in err):
         print(f"[失败] 无权限读取项目：{err}")
@@ -132,8 +134,12 @@ def cmd_create(account: str, project: str, token: str) -> int:
         print("[备选] 在控制台 Workers & Pages -> Create -> Pages -> "
               "Drag and drop your files 手动创建同名项目（必须选 Direct Upload）。")
         return 1
+    sub = (result or {}).get("subdomain") or f"{project}.pages.dev"
     print(f"[项目] 已创建 {result.get('name', project)}"
           f"（生产分支 {result.get('production_branch', 'main')}）。")
+    print(f"[回退地址] https://{sub}")
+    print("[提示] pages.dev 子域全局唯一，若已被占用会自动追加后缀；"
+          "正式入口始终是自定义域名，不要按项目名猜测回退地址。")
     print("[提示] 若后续 wrangler 部署报项目类型不符，请删除该项目并改用控制台 "
           "Direct Upload 创建（API 未提供显式的 source 类型字段）。")
     return 0
@@ -184,6 +190,9 @@ def cmd_bind(account: str, project: str, domain_name: str, token: str) -> int:
         print(f"[失败] 绑定失败：{err}")
         print("[提示] 必须走 Pages 项目的 Custom domains 绑定流程；"
               "仅在 DNS 里手工加 CNAME 会导致 522。")
+        print("[提示] 若错误含 externally managed DNS records / already in use："
+              "先在 zone 的 DNS -> Records 删除该主机名下已有的 A/AAAA/CNAME 记录，"
+              "再重跑 bind。Pages 只接管自己创建的记录，不会覆盖手工记录。")
         print("[备选] 控制台：项目 -> Custom domains -> Set up a domain，"
               "填入同一域名并确认自动生成的 CNAME。")
         return 1

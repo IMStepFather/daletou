@@ -65,7 +65,7 @@ mkdir -p "$APP_DIR/logs"
 
 # 2) 拷贝脚本（原地模式下只核对文件是否齐全）
 FILES=(config.py generator.py storage.py report.py fetcher.py notify.py lotto.py
-       fetch_results.py prize_rules.py pages_setup.py requirements.txt
+       fetch_results.py prize_rules.py pages_setup.py pages_upload.py requirements.txt
        money-bag.svg run.sh sync_pages.sh daletou.cron .env.example)
 copied=0
 if [[ "$IN_PLACE" -eq 1 ]]; then

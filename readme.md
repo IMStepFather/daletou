@@ -12,6 +12,7 @@
 - `generator.py`、`storage.py`、`fetcher.py`、`report.py`、`notify.py`、`config.py` — 各功能层
 - `money-bag.svg` — 站点 logo 源文件；`report.py` 把它内联进 `results.html` 并生成 favicon，换 logo 只需替换该文件后重跑 `./run.sh report`
 - `sync_pages.sh` — 独立同步入口，把 `results.html` 幂等发布到 Cloudflare Pages
+- `pages_upload.py` — 纯标准库 Direct Upload（内嵌 BLAKE3，四步 API），不依赖 Node.js / Wrangler；`--selftest` 可离线自检
 - `pages_setup.py` — 一次性配置 Pages 项目与自定义域名（纯标准库 API 调用）
 - `run.sh` — cron 包装（加载 `.env` 并转发）；`daletou.cron` — 定时任务；`deploy.sh` — VPS 一键部署
 
@@ -111,7 +112,7 @@ cd ~/daletou && git pull --ff-only && bash deploy.sh && cd /opt/daletou && ./run
 
 **架构：VPS 仍是唯一执行与数据源，Pages 只是 `results.html` 的公开只读镜像。** `records.csv`、`.env`、抓取与计算逻辑均不上云、不入库；同步失败不会影响生成/抓取/推送主流程。
 
-官方 Direct Upload 的稳定通道是 Wrangler（需 Node.js）；项目与域名配置走 Cloudflare 公开 API（Python 标准库，无需额外依赖）。业务 Python 代码零改动。
+整套链路零第三方运行时依赖：**项目与域名配置**走 Cloudflare 公开 API，**报表上传**走 `pages_upload.py` 实现的 Direct Upload 四步协议（纯标准库，内嵌 BLAKE3）。因此 VPS 不需要 Node.js、npm 或 Wrangler；`Wrangler` 仅作为可选的备用通道保留。业务 Python 代码零改动。
 
 ### 1. Cloudflare 侧准备（一次性）
 
@@ -127,18 +128,20 @@ cd ~/daletou && git pull --ff-only && bash deploy.sh && cd /opt/daletou && ./run
 
 ```bash
 cd /opt/daletou && git pull --ff-only
-node --version                       # 建议 20+，最低 16.17.0
-command -v wrangler || npm install -g wrangler
-wrangler --version
+python3 /opt/daletou/pages_upload.py --selftest   # 离线自检，13 项向量须全部通过
 vi /opt/daletou/.env                 # 填入 CLOUDFLARE_ACCOUNT_ID 与 CLOUDFLARE_API_TOKEN
 python3 /opt/daletou/pages_setup.py  # create 项目 -> bind 域名 -> 输出状态
 /opt/daletou/sync_pages.sh           # 首次部署，生成 index.html
 curl -I https://daletou.680868.xyz/
 ```
 
-以 root 执行时 `npm install -g wrangler` 无需 `sudo`；非 root 请自行加 `sudo`。Ubuntu 22.04/24.04 软件源的 `nodejs` 可能低于 20，若 `node --version` 偏低，先经 NodeSource 或 nvm 安装 Node.js 22 再装 wrangler，否则会报 Node 版本不兼容。Wrangler 也可用 `npx --yes wrangler` 免全局安装（首次会联网下载，cron 中建议全局安装）。
+**`vi` 这一步要单独执行**：把 `.env.example` 里两个 Cloudflare 凭证键填上真实值，并确认 `PAGES_DOMAIN=daletou.680868.xyz`，保存退出后再执行后续命令；不要和下面的命令整段一起粘贴。
+
+`pages_upload.py --selftest` 校验内嵌 BLAKE3 的 13 组官方向量与 multipart 构造。Cloudflare 的 asset key 是 `blake3(base64(文件内容) + 扩展名).hex()[:32]`，哈希算错时 API 仍返回成功、但所有页面 404，因此首次部署前必须自检通过；`sync_pages.sh` 在首次部署时也会自动跑一次。
 
 `pages_setup.py` 幂等：项目/域名已存在时跳过。子命令 `create` / `bind` / `status` 可单独执行，`status` 为只读。`sync_pages.sh` 也可随时手动触发。
+
+上传通道由 `.env` 的 `PAGES_UPLOADER` 决定：`auto`（默认）在检测到 `wrangler` 可执行文件时用它，否则用纯标准库通道；`python` 强制纯标准库；`wrangler` 强制 Wrangler（须自行安装并可用 `WRANGLER_BIN` 指定路径）。**不会自动调用 `npx wrangler`**：Wrangler 4.87+ 要求 Node.js 22，在 Node 18 环境冷启动下载后必然失败。若纯标准库通道与 Cloudflare API 出现兼容问题，安装 Node.js 22 + Wrangler 后设 `PAGES_UPLOADER=wrangler` 即可切回官方通道，两条路径共用同一份 `.env` 与同一个幂等状态文件。
 
 > 若 API 创建的项目被 wrangler 判定类型不符，请在控制台 Workers & Pages → Create → Pages → **Drag and drop your files** 手动创建同名 `daletou` 项目（必须选 Direct Upload，不能选 Connect to Git），再用 `pages_setup.py bind` 绑定域名。Direct Upload 项目后续无法切换为 Git 集成。
 
@@ -163,9 +166,9 @@ crontab -l > ~/crontab.bak 2>/dev/null || true
 ### 4. 验证与排错
 
 ```bash
-python3 /opt/daletou/pages_setup.py status     # 项目、最近部署、域名与证书状态
-curl -I https://daletou.680868.xyz/            # 期望 200
-curl -I https://daletou.pages.dev/             # pages.dev 回退地址
+python3 /opt/daletou/pages_setup.py status     # 项目、最近部署、域名/证书状态、实际 subdomain
+curl -I https://daletou.680868.xyz/            # 正式入口，期望 200
+# 回退地址：把 status 输出的 subdomain 代入 curl -I https://<subdomain>/
 tail -n 50 /opt/daletou/logs/cron.log
 ```
 
@@ -174,7 +177,12 @@ tail -n 50 /opt/daletou/logs/cron.log
 | `skip: ... not set` | `.env` 未填凭证；脚本自加载 `.env`，填完即自动生效 |
 | `Project not found [8000007]` | 项目未创建；执行 `pages_setup.py create` 或按上文控制台创建 |
 | HTTP 403 / `Could not route to ...` | Token 缺 `Account → Cloudflare Pages → Edit`，或 Account ID 错误 |
-| `wrangler and npx not found` | 安装 Node.js 与 wrangler；cron 的 PATH 需包含 `/usr/bin` / `/usr/local/bin` |
+| `[自检] BLAKE3 官方向量 ... 存在失败` | 立即停止部署；核对 Python 版本，或设 `PAGES_UPLOADER=wrangler` 切回官方通道 |
+| 部署返回成功但页面 404 | asset hash 口径不符时 CF 会静默接受却不提供文件；先跑 `pages_upload.py --selftest` |
+| `wrangler not found` | 默认通道不需要它；仅当显式设了 `PAGES_UPLOADER=wrangler` 时才需安装 Node.js 22 + Wrangler 或用 `WRANGLER_BIN` 指定路径 |
+| 绑定报 `externally managed DNS records` / `already in use` | 该主机名下存在手工 A/AAAA/CNAME，或域名仍挂在旧 Pages 项目上；删除同名记录 / 从旧项目解绑后重跑 `pages_setup.py bind` |
+| 自定义域解析到非 Cloudflare IP | NS 未切换到 Cloudflare，或残留手工 A 记录；`dig NS 680868.xyz +short` 核对并清理 DNS |
+| `daletou.pages.dev` 打开的是陌生站点 | 该全局子域已被第三方占用，与本项目无关；只验证自定义域名 |
 | 自定义域返回 522 | 只手工加了 CNAME 而未走绑定流程；执行 `pages_setup.py bind` 或控制台 Custom domains |
 | 证书长时间 `pending` | 等待数分钟；检查 zone 的 CAA 记录是否允许 Cloudflare 签发 |
 | 访问返回 404 | 尚未首次部署；执行 `sync_pages.sh`（`index.html` 由该脚本生成） |

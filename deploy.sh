@@ -57,7 +57,7 @@ mkdir -p "$APP_DIR/logs"
 # 2) 拷贝脚本（源文件位于当前目录）
 FILES=(config.py generator.py storage.py report.py fetcher.py notify.py lotto.py
        fetch_results.py prize_rules.py pages_setup.py requirements.txt
-       run.sh sync_pages.sh daletou.cron .env.example)
+       money-bag.svg run.sh sync_pages.sh daletou.cron .env.example)
 copied=0
 for f in "${FILES[@]}"; do
   if [[ -f "$f" ]]; then

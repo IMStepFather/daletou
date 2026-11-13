@@ -36,6 +36,11 @@ RESULTS_HTML = BASE_DIR / "results.html"
 # records.csv 仍保留全部历史，累计统计也按全量计算。
 DISPLAY_MAX_PERIODS = 20
 
+# 站点 logo 源文件与品牌色。Cloudflare Pages 只上传 results.html 单文件，
+# 因此 SVG 必须内联进 HTML（外链会在域名上 404）；缺失/损坏时静默降级为无 logo。
+LOGO_SVG = BASE_DIR / "money-bag.svg"
+LOGO_COLOR = "#c2780a"
+
 # ---- 抓取参数 ----
 FETCH_MIN_ISSUES = 30        # 每次最少抓取期数
 FETCH_MAX_ISSUES = 200       # 每次最多抓取期数（约 466 天）

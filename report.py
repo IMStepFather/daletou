@@ -5,15 +5,21 @@
 收益统计置于表格之前；表格仅展示最近 DISPLAY_MAX_PERIODS 期，统计仍按
 全部历史累计（records.csv 保留全量数据真相）。
 
+results.html 为自包含单文件：CSS 与站点 logo（money-bag.svg）均内联，
+不引用任何外部资源，便于 Cloudflare Pages 只上传一个 HTML 文件。
+
 openpyxl 未安装时自动跳过 xlsx 渲染并给出提示，不影响 md / html 输出。
 """
 from datetime import datetime
 from html import escape
 from typing import List
+from urllib.parse import quote
 
 from config import (
     COST_PER_TICKET,
     DISPLAY_MAX_PERIODS,
+    LOGO_COLOR,
+    LOGO_SVG,
     RESULTS_HTML,
     RESULTS_MD,
     RESULTS_XLSX,
@@ -275,7 +281,7 @@ def render_xlsx(records: List[dict]) -> bool:
 
 
 def render_html(records: List[dict]) -> None:
-    """渲染 results.html 静态页：自包含（内联 CSS，无外部依赖），
+    """渲染 results.html 静态页：自包含（内联 CSS / logo，无外部依赖），
     适配手机浏览器与微信内置浏览器，供 VPS 直接对外服务。
 
     累计正确率与收益统计置于表格之前；表格仅含最近
@@ -284,6 +290,7 @@ def render_html(records: List[dict]) -> None:
     s = accuracy_summary(records)
     p = profit_summary(records)
     shown = _display_records(records)
+    logo_html, favicon_link = _logo_assets()
     rows_html = []
     for pred, actual in _rows(shown):
         # 号码列渲染为圆点徽章，类型列渲染为语义徽章，其余列纯文本。
@@ -317,11 +324,17 @@ def render_html(records: List[dict]) -> None:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>大乐透生成记录</title>
+{favicon_link}
 <style>
 body{{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
   max-width:960px;margin:24px auto;padding:0 16px;color:#222;background:#fff}}
-h1{{font-size:20px}} h2{{font-size:15px;margin:0 0 6px}}
-.meta{{color:#777;font-size:13px;margin-bottom:14px}}
+h1{{font-size:20px;margin:0}} h2{{font-size:15px;margin:0 0 6px}}
+.brand{{display:flex;align-items:center;gap:12px;margin:0 0 14px}}
+.brand .logo{{display:flex;align-items:center;justify-content:center;
+  flex:0 0 44px;width:44px;height:44px;border-radius:12px;
+  background:#fff7ea;color:{LOGO_COLOR}}}
+.brand .logo svg{{display:block;width:28px;height:28px}}
+.meta{{color:#777;font-size:13px;margin:2px 0 0}}
 .stats{{background:#f5f7fa;border:1px solid #dde4ec;border-radius:8px;
   padding:12px 16px;margin:0 0 14px;font-size:14px;line-height:1.7}}
 .stats .block+.block{{margin-top:10px}}
@@ -348,9 +361,14 @@ th{{background:#e2e8f0}}
 </style>
 </head>
 <body>
+<header class="brand">
+{logo_html}
+<div>
 <h1>大乐透生成记录</h1>
 <p class="meta">更新时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 　共 {s["total"]} 期（已对比 {s["compared"]} 期）</p>
+</div>
+</header>
 <div class="stats">
 <div class="block"><h2>累计正确率</h2>
 前区 {s["front_hit"]}/{s["front_picked"]}（{_rate(s["front_hit"], s["front_picked"])}，期望 {FRONT_EXPECT}）；
@@ -373,6 +391,39 @@ th{{background:#e2e8f0}}
 </html>
 """
     RESULTS_HTML.write_text(html, encoding="utf-8")
+
+
+def _logo_assets():
+    """生成内联 logo 与 favicon，返回 (logo_html, favicon_link)。
+
+    Cloudflare Pages 只上传 results.html 单文件，外链 SVG 会 404，因此：
+    - 可见 logo：直接嵌入 SVG 标签，其 currentColor 继承 CSS 的 color；
+    - favicon：同一 SVG 把 currentColor 换成实体品牌色后编码为 data URI
+      （favicon 不能继承页面 color，不替换会渲染成黑色）。
+    SVG 缺失、损坏或含脚本时静默降级为空串，报表渲染不受影响。
+    """
+    try:
+        svg = LOGO_SVG.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return "", ""
+    low = svg.lower()
+    if (
+        not low.startswith("<svg")
+        or "<script" in low
+        or "onload=" in low
+        or "onerror=" in low
+        or "<foreignobject" in low
+    ):
+        return "", ""
+    logo_html = (
+        '<span class="logo" aria-hidden="true" focusable="false">'
+        + svg + "</span>"
+    )
+    favicon = "data:image/svg+xml," + quote(
+        svg.replace("currentColor", LOGO_COLOR), safe=""
+    )
+    favicon_link = f'<link rel="icon" type="image/svg+xml" href="{favicon}">'
+    return logo_html, favicon_link
 
 
 def _ball_badges_from_text(text: str, css: str) -> str:

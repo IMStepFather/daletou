@@ -10,6 +10,7 @@
 - `fetch_results.py` — 独立抓取入口，cron 实际调用，可单独执行
 - `prize_rules.py` — 中奖规则引擎（2026 新规，7 奖级 / 13 中奖条件 / 奖池两档 / 追加 80%）
 - `generator.py`、`storage.py`、`fetcher.py`、`report.py`、`notify.py`、`config.py` — 各功能层
+- `money-bag.svg` — 站点 logo 源文件；`report.py` 把它内联进 `results.html` 并生成 favicon，换 logo 只需替换该文件后重跑 `./run.sh report`
 - `sync_pages.sh` — 独立同步入口，把 `results.html` 幂等发布到 Cloudflare Pages
 - `pages_setup.py` — 一次性配置 Pages 项目与自定义域名（纯标准库 API 调用）
 - `run.sh` — cron 包装（加载 `.env` 并转发）；`daletou.cron` — 定时任务；`deploy.sh` — VPS 一键部署
@@ -135,6 +136,8 @@ crontab -l > ~/crontab.bak 2>/dev/null || true
 每 5 分钟检查 `results.html` 的 SHA-256；未变化静默退出（无日志），变化才上传一次。三次开奖抓取重试不会重复部署。同步延迟最多 5 分钟，对事后留痕无影响。
 
 `sync_pages.sh` 会生成 `_headers`（`Cache-Control: no-cache, must-revalidate`），避免 CDN/浏览器缓存旧报表；上传 `index.html` 与 `results.html` 两个入口。
+
+`results.html` 是**自包含单文件**：CSS 与 `money-bag.svg` 均内联（页面 logo + 浏览器标签 favicon），运行时不请求任何外部资源。因为 Pages 只上传上面这几个产物，**不要改成 `<img src="money-bag.svg">` 之类的外链**，域名上不存在该 SVG 会 404。品牌色与源文件名由 `config.py` 的 `LOGO_COLOR` / `LOGO_SVG` 指定；文件缺失或含脚本时静默降级为无 logo，报表渲染不会失败。
 
 ### 4. 验证与排错
 

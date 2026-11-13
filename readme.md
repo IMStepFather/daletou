@@ -51,6 +51,13 @@ cp .env.example .env                                        # 填入 Server酱 S
 
 ## VPS 部署（Ubuntu）
 
+**两种目录结构都支持**：
+
+- **A（当前 VPS 实际结构）**：直接把仓库 clone 到 `/opt/daletou`，该目录既是 git 工作树又是运行目录。`git pull --ff-only` 直接更新运行中的文件，**不需要 `deploy.sh` 拷贝**；在此结构下 `deploy.sh` 自动进入「原地模式」，跳过拷贝，只核对文件、行尾、权限、依赖与自检。
+- **B**：代码在 `~/daletou`，由 `deploy.sh` 把文件拷贝到 `/opt/daletou` 运行。
+
+下面是 B 结构的首次部署流程；A 结构把 clone 目标改为 `/opt/daletou` 并跳过 `bash deploy.sh` 即可。
+
 ```bash
 git clone https://github.com/IMStepFather/daletou.git ~/daletou && cd ~/daletou
 bash deploy.sh                       # 安装到 /opt/daletou，已存在的 .env 不覆盖
@@ -62,7 +69,18 @@ cd /opt/daletou && ./run.sh fetch --dry-run
 
 私有仓库在 VPS 上需配置只读 SSH deploy key 或 fine-grained PAT。crontab **必须追加安装**，不要用 `crontab daletou.cron` 整体覆盖（会抹掉腾讯云 stargate 等既有任务）。上面命令会先移除旧的 daletou 任务块、环境变量行与注释行（避免 `sync_pages.sh` 被重复追加），其他任务行原样保留。
 
-日常更新：`cd ~/daletou && git pull --ff-only && bash deploy.sh`。
+日常更新（按结构二选一）：
+
+```bash
+# A. /opt/daletou 本身就是 git 仓库（推荐，也是当前 VPS 的结构）
+cd /opt/daletou && git pull --ff-only && ./run.sh report
+# 可选：bash deploy.sh   # 原地模式：核对文件/行尾/权限/依赖，不拷贝、不动 .git
+
+# B. 代码在 ~/daletou、运行目录在 /opt/daletou
+cd ~/daletou && git pull --ff-only && bash deploy.sh && cd /opt/daletou && ./run.sh report
+```
+
+> A 结构下旧版 `deploy.sh` 遇到「源目录 == 安装目录」会以退出码 1 拒绝执行，从而中断整条 `&&` 命令链，使后面的 `./run.sh report` 不执行；现已改为原地维护模式，不会再打断更新流程。
 
 ## 定时任务与关键约定
 
@@ -97,12 +115,13 @@ cd /opt/daletou && ./run.sh fetch --dry-run
 
 ### 1. Cloudflare 侧准备（一次性）
 
-1. 确认 `680868.xyz` 已作为 zone 托管在当前 Cloudflare 账户（本部署前提）。
-2. 创建 API Token：My Profile → API Tokens → Create Token → Custom token → Get started：
+1. 确认 `680868.xyz` 已作为 zone 托管在当前 Cloudflare 账户，且注册商处的 NS 已改为 Cloudflare 分配的两个地址：`dig NS 680868.xyz +short` 应返回 `*.ns.cloudflare.com`。NS 未切换时 Custom domains 无法绑定。
+2. **清理同名 DNS 记录**：在 zone 的 DNS → Records 中搜索 `daletou`，若已存在手工创建的 A / AAAA / CNAME（例如指向旧服务器的 A 记录），先删除。Pages 绑定只接管自己创建的记录，遇到手工记录会报 `already has externally managed DNS records` 或直接不生效；绑定成功后 Cloudflare 会自动创建指向项目的代理记录。此删除在控制台手工完成，不需要给 API 令牌授予 DNS 写权限。
+3. 创建 API Token：My Profile → API Tokens → Create Token → Custom token → Get started：
    - Permissions：`Account` / `Cloudflare Pages` / `Edit`（即 Pages Write）
    - Account Resources：`Include` → 仅该账户
    - 不要授予 Zone / DNS / Workers 权限；zone 在 CF 时绑定域名会自动创建 CNAME，不需要 DNS 写权限。
-3. 复制控制台右侧栏的 **Account ID**（32 位十六进制串）。Token 仅显示一次。
+4. 复制控制台右侧栏的 **Account ID**（32 位十六进制串）。Token 仅显示一次。
 
 ### 2. VPS 一次性配置
 
@@ -122,6 +141,8 @@ curl -I https://daletou.680868.xyz/
 `pages_setup.py` 幂等：项目/域名已存在时跳过。子命令 `create` / `bind` / `status` 可单独执行，`status` 为只读。`sync_pages.sh` 也可随时手动触发。
 
 > 若 API 创建的项目被 wrangler 判定类型不符，请在控制台 Workers & Pages → Create → Pages → **Drag and drop your files** 手动创建同名 `daletou` 项目（必须选 Direct Upload，不能选 Connect to Git），再用 `pages_setup.py bind` 绑定域名。Direct Upload 项目后续无法切换为 Git 集成。
+
+`*.pages.dev` 子域是全局唯一命名空间，`daletou.pages.dev` 已被第三方「大乐透摇奖」站点占用，不是本项目。因此**正式入口只用自定义域名** `https://daletou.680868.xyz`；项目创建后实际分配的回退地址可能带后缀，以 `python3 /opt/daletou/pages_setup.py status` 输出的 `subdomain` 为准，不要按项目名猜测。
 
 ### 3. 挂载同步任务
 

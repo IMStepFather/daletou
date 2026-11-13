@@ -2,6 +2,10 @@
 # 大乐透脚本 VPS 一键部署（Ubuntu 20.04 / 22.04 / 24.04）
 # 用法：bash deploy.sh [安装目录]     默认安装目录 /opt/daletou
 #
+# 两种部署结构均支持：
+#   1) 代码在 ~/daletou（git checkout），运行目录 /opt/daletou：拷贝文件 + 维护
+#   2) /opt/daletou 本身就是 git 工作树：原地模式，跳过拷贝，只做维护检查
+#      （此时 git pull 已更新全部文件，本脚本并非必需）
 # 兼容 root 与普通用户运行；
 # 自动修复 CRLF 行尾（Windows 传输引入会导致 shebang 与 cron 失效）；
 # 依赖安装走 apt 系统包优先、pip 兜底（兼容 Ubuntu 24.04 的 PEP 668 限制）。
@@ -17,21 +21,23 @@ set -euo pipefail
 APP_DIR="${1:-/opt/daletou}"
 PY="${PYTHON:-python3}"
 
-# Guard 2: source dir must differ from install dir, otherwise every 'cp'
-# reports "are the same file" and the deploy aborts.
+# Guard 2: when the git checkout IS the install dir, "cp" would fail with
+# "are the same file". Switch to in-place maintenance instead of aborting.
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 if [[ -d "$APP_DIR" ]]; then
   APP_DIR_REAL="$(cd "$APP_DIR" && pwd -P)"
 else
   APP_DIR_REAL="$APP_DIR"
 fi
+IN_PLACE=0
 if [[ "$SRC_DIR" == "$APP_DIR_REAL" ]]; then
-  printf '[ERROR] Source directory equals install directory: %s\n' "$SRC_DIR" >&2
-  printf '[HINT] Run from the git checkout (e.g. ~/daletou), not from %s\n' "$APP_DIR" >&2
-  exit 1
+  IN_PLACE=1
 fi
 
 echo "[部署] 目标目录：$APP_DIR"
+if [[ "$IN_PLACE" -eq 1 ]]; then
+  echo "[部署] 原地模式：当前目录即 git 工作树，跳过拷贝，仅做维护检查"
+fi
 echo "[部署] Python：$($PY --version 2>&1)"
 
 MYUID="$(id -u)"
@@ -41,32 +47,45 @@ if [[ "$MYUID" -eq 0 ]]; then
   echo "[部署] 以 root 运行（VPS 常见场景），无需 sudo"
 else
   SUDO="sudo"
-  APP_USER="$USER"
+  APP_USER="${USER:-$(id -un)}"
   echo "[部署] 以 $APP_USER 运行，需要提权的步骤会自动 sudo"
 fi
 
-# 1) 目录与日志
+# 1) 目录与日志；原地模式不 chown，避免把 .git 改属主后触发
+#    git "dubious ownership" 保护，导致后续 git pull 失败。
 $SUDO mkdir -p "$APP_DIR/logs"
-if [[ "$MYUID" -eq 0 ]]; then
-  chown -R "$APP_USER" "$APP_DIR" 2>/dev/null || true
-else
-  $SUDO chown -R "$APP_USER" "$APP_DIR" 2>/dev/null || true
+if [[ "$IN_PLACE" -eq 0 ]]; then
+  if [[ "$MYUID" -eq 0 ]]; then
+    chown -R "$APP_USER" "$APP_DIR" 2>/dev/null || true
+  else
+    $SUDO chown -R "$APP_USER" "$APP_DIR" 2>/dev/null || true
+  fi
 fi
 mkdir -p "$APP_DIR/logs"
 
-# 2) 拷贝脚本（源文件位于当前目录）
+# 2) 拷贝脚本（原地模式下只核对文件是否齐全）
 FILES=(config.py generator.py storage.py report.py fetcher.py notify.py lotto.py
        fetch_results.py prize_rules.py pages_setup.py requirements.txt
        money-bag.svg run.sh sync_pages.sh daletou.cron .env.example)
 copied=0
-for f in "${FILES[@]}"; do
-  if [[ -f "$f" ]]; then
-    cp "$f" "$APP_DIR/"
-    copied=$((copied + 1))
-  else
-    echo "[警告] 当前目录缺少 $f（跳过）"
-  fi
-done
+if [[ "$IN_PLACE" -eq 1 ]]; then
+  for f in "${FILES[@]}"; do
+    if [[ -f "$APP_DIR/$f" ]]; then
+      copied=$((copied + 1))
+    else
+      echo "[警告] 原地模式缺少 $f（请确认 git pull 是否完整）"
+    fi
+  done
+else
+  for f in "${FILES[@]}"; do
+    if [[ -f "$f" ]]; then
+      cp "$f" "$APP_DIR/"
+      copied=$((copied + 1))
+    else
+      echo "[警告] 当前目录缺少 $f（跳过）"
+    fi
+  done
+fi
 if [[ "$copied" -eq 0 ]]; then
   echo "[错误] 未找到任何脚本文件，请在本项目目录内运行本脚本"
   exit 1
@@ -78,8 +97,16 @@ for f in "$APP_DIR"/*.sh "$APP_DIR"/*.cron; do
     sed -i 's/\r$//' "$f"
   fi
 done
-chmod +x "$APP_DIR/run.sh" "$APP_DIR/sync_pages.sh"
-echo "[部署] 已拷贝 $copied 个文件并规范化行尾（CRLF -> LF）"
+for f in "$APP_DIR/run.sh" "$APP_DIR/sync_pages.sh"; do
+  if [[ -f "$f" ]]; then
+    chmod +x "$f"
+  fi
+done
+if [[ "$IN_PLACE" -eq 1 ]]; then
+  echo "[部署] 原地模式：已核对 $copied 个文件并规范化行尾（CRLF -> LF）"
+else
+  echo "[部署] 已拷贝 $copied 个文件并规范化行尾（CRLF -> LF）"
+fi
 
 # 4) 依赖：优先 apt 系统包（Ubuntu 24.04 受 PEP 668 限制，裸 pip 会失败）
 installed=0
